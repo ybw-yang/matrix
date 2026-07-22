@@ -1,6 +1,6 @@
 {
   "robot": {
-    "robot_type": "xgb",
+    "robot_type": "zgws",
     "weapon": "",
     "position": {
       "x": 0,
@@ -68,6 +68,10 @@
         "random_scan": false,
         "frequency": 10
       }
-    }
+    },
+    "mujoco_running": false,
+    "state_port": 25001,
+    "cmd_port": 25002,
+    "EgoView": true
   }
 }

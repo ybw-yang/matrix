@@ -16,7 +16,7 @@ case $1 in
 r)
     echo "run robot"
     export LD_LIBRARY_PATH=${DIR}/build/export/mc/bin
-    export ROBOT_TYPE=XG
+    export ROBOT_TYPE=ZGWS
     cd ${DIR}/build/export/mc/bin/
     taskset -c 7 ./mc_ctrl r
     ;;
@@ -27,4 +27,4 @@ r)
     ;;
 esac
 
-export ROBOT_TYPE=XG
+export ROBOT_TYPE=ZGWS
