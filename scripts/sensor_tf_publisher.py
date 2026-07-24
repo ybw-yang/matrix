@@ -48,6 +48,11 @@ class SensorTfPublisher(Node):
         self.declare_parameter("parent_frame", "base_link")
         self.declare_parameter("length_scale", 0.01)  # cm -> m
         self.declare_parameter("y_sign", -1.0)         # right -> left
+        # camera optical frame: image/depth data uses z-forward optical convention,
+        # while "front" is body-aligned (x-forward). Publish front -> front_optical
+        # so depth->pointcloud comes out correctly oriented.
+        self.declare_parameter("camera_frame", "front")
+        self.declare_parameter("optical_frame", "front_optical")  # "" to disable
         cfg_path = self.get_parameter("config_path").value
         self.parent = self.get_parameter("parent_frame").value
         self.scale = float(self.get_parameter("length_scale").value)
@@ -67,6 +72,21 @@ class SensorTfPublisher(Node):
         # Body IMU sits at the body origin.
         tfs.append(self.make({}, "imu_link"))
 
+        # Optical frame: camera_frame -> optical_frame (standard REP-103 rotation
+        # x-fwd/y-left/z-up  ->  z-fwd/x-right/y-down), quaternion (-.5,.5,-.5,.5).
+        optical = self.get_parameter("optical_frame").value
+        camera = self.get_parameter("camera_frame").value
+        if optical:
+            t = TransformStamped()
+            t.header.stamp = self.get_clock().now().to_msg()
+            t.header.frame_id = camera
+            t.child_frame_id = optical
+            t.transform.rotation.x = -0.5
+            t.transform.rotation.y = 0.5
+            t.transform.rotation.z = -0.5
+            t.transform.rotation.w = 0.5
+            tfs.append(t)
+
         self.br = StaticTransformBroadcaster(self)
         self.br.sendTransform(tfs)
         self.get_logger().info(
@@ -83,9 +103,13 @@ class SensorTfPublisher(Node):
         t.transform.translation.x = float(pos.get("x", 0.0)) * self.scale
         t.transform.translation.y = float(pos.get("y", 0.0)) * self.scale * self.ysign
         t.transform.translation.z = float(pos.get("z", 0.0)) * self.scale
+        # UE (left-handed, y-right) -> ROS (right-handed, y-left): negate roll,
+        # pitch AND yaw. UE's pitch is nose-up-positive while ROS pitch is
+        # nose-down-positive, so pitch must flip too (verified: without this a
+        # 15deg camera pitch tilted the depth cloud the wrong way).
         flip = -1.0 if self.ysign < 0 else 1.0
         r = math.radians(float(rot.get("roll", 0.0))) * flip
-        p = math.radians(float(rot.get("pitch", 0.0)))
+        p = math.radians(float(rot.get("pitch", 0.0))) * flip
         y = math.radians(float(rot.get("yaw", 0.0))) * flip
         q = rpy_to_quat(r, p, y)
         t.transform.rotation.x = q[0]
