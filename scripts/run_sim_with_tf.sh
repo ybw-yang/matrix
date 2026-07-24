@@ -136,19 +136,24 @@ else
   log "      (odom often appears only once the robot is activated — press U to stand)."
 fi
 
-# 3. robot_forward: odom -> base_link
-if [ -f "$FORWARD_SETUP" ] && [ -x "$FORWARD_BIN" ]; then
-  log "starting robot_forward (odom -> base_link, log: bin/robot_forward.log)"
+# 3. odom -> base_link is now published by rsp.launch.py's odom_to_tf node
+#    (full roll/pitch from /odom/mujoco_odom). robot_forward is NOT started: it
+#    flattens roll/pitch, so base_link stayed level on slopes/steps. To go back
+#    to robot_forward instead, set USE_ROBOT_FORWARD=1 and odom_tf:=false.
+if [ "${USE_ROBOT_FORWARD:-0}" = "1" ] && [ -f "$FORWARD_SETUP" ] && [ -x "$FORWARD_BIN" ]; then
+  log "starting robot_forward (odom -> base_link, YAW-ONLY; log: bin/robot_forward.log)"
   ( set +u; source "$FORWARD_SETUP"; exec "$FORWARD_BIN" ) > "$LOG_DIR/robot_forward.log" 2>&1 &
   FWD_PID=$!
 else
-  log "WARN: robot_forward not found at $FORWARD_BIN — no odom->base_link tf"
+  log "odom->base_link via odom_to_tf in the launch (full tilt); robot_forward skipped."
 fi
 
 # 4. tf stack (needs a URDF for legs/sensors/footplane)
 if [ -n "$URDF" ]; then
+  ODOM_TF_ARG="true"; [ "${USE_ROBOT_FORWARD:-0}" = "1" ] && ODOM_TF_ARG="false"
   log "starting tf stack: rsp.launch.py urdf=$URDF footprint_mode=$FOOTPRINT_MODE (log: bin/rsp.log)"
   ros2 launch scripts/rsp.launch.py urdf:="$URDF" footprint_mode:="$FOOTPRINT_MODE" \
+      odom_tf:="$ODOM_TF_ARG" \
       > "$LOG_DIR/rsp.log" 2>&1 &
   RSP_PID=$!
 else
