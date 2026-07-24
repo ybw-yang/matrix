@@ -49,7 +49,11 @@ def generate_launch_description():
     footprint_script = os.path.join(here, "base_footprint_publisher.py")
     joint_udp_script = os.path.join(here, "joint_state_udp_bridge.py")
     sensor_tf_script = os.path.join(here, "sensor_tf_publisher.py")
+    depth_fixup_script = os.path.join(here, "depth_image_fixup.py")
+    cmd_vel_script = os.path.join(here, "cmd_vel_udp_pub.py")
+    odom_tf_script = os.path.join(here, "odom_to_tf.py")
     ecal_bridge_bin = os.path.join(here, "bin", "mujoco_joint_bridge")
+    cmd_vel_bridge_bin = os.path.join(here, "bin", "cmd_vel_ecal_bridge")
     config_json = os.path.join(here, os.pardir, "config", "config.json")
 
     return LaunchDescription([
@@ -57,19 +61,52 @@ def generate_launch_description():
             default_value="src/robot_mujoco/zsibot_robots/xgb/xg_b.urdf"),
         DeclareLaunchArgument("base_frame", default_value="base_link"),
         DeclareLaunchArgument("root_link", default_value="BASE_LINK"),
+        DeclareLaunchArgument("odom_tf", default_value="true",
+            description="publish odom->base_link from /odom/mujoco_odom with full "
+                        "roll/pitch (replaces robot_forward, which flattens tilt)"),
         DeclareLaunchArgument("publish_footprint", default_value="true"),
         DeclareLaunchArgument("footprint_mode", default_value="footplane"),
+        DeclareLaunchArgument("contact_mode", default_value="height",
+            description="foot contact estimate: height (flat ground) | velocity (slopes/steps)"),
+        DeclareLaunchArgument("footprint_smooth_tau", default_value="0.25",
+            description="base_footprint low-pass time constant (s); 0 disables, larger=smoother"),
+        DeclareLaunchArgument("footprint_feet", default_value="contact",
+            description="feet defining base_footprint centre: contact | all"),
         DeclareLaunchArgument("sensor_tf", default_value="true",
             description="publish base_link -> sensor frames from config/config.json"),
         DeclareLaunchArgument("real_joints", default_value="true",
             description="true: real leg angles from eCAL leg_data; "
                         "false: joint_state_publisher zeros."),
+        DeclareLaunchArgument("depth_fixup", default_value="true",
+            description="fix the sim depth image header (0 dims) -> /front_depth/image"),
+        DeclareLaunchArgument("depth_width", default_value="640"),
+        DeclareLaunchArgument("depth_height", default_value="480"),
+        # cmd_vel velocity control WRITES commands to the robot -> opt-in (default off).
+        DeclareLaunchArgument("cmd_vel", default_value="false",
+            description="enable /cmd_vel -> eCAL sdk_cmd velocity bridge (sends commands!)"),
+        DeclareLaunchArgument("cmd_control_mode", default_value="-1",
+            description="SDKCmd control_mode; <0 = OBSERVE only (prints mode, no command)"),
+        DeclareLaunchArgument("cmd_motion_mode", default_value="0"),
+        DeclareLaunchArgument("cmd_udp_port", default_value="25999"),
 
         Node(
             package="robot_state_publisher",
             executable="robot_state_publisher",
             output="screen",
             parameters=[{"robot_description": robot_description}],
+        ),
+
+        # odom -> base_link with FULL orientation (roll/pitch/yaw), replacing
+        # robot_forward. /odom/mujoco_odom already carries the true tilted pose.
+        ExecuteProcess(
+            cmd=[
+                "python3", odom_tf_script, "--ros-args",
+                "-p", "in_topic:=/odom/mujoco_odom",
+                "-p", "odom_frame:=odom",
+                "-p", ["base_frame:=", base_frame],
+            ],
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("odom_tf")),
         ),
 
         # Identity bridge: odom -> base_link (robot_forward) -> BASE_LINK (URDF).
@@ -115,6 +152,9 @@ def generate_launch_description():
                 "-p", ["base_frame:=", base_frame],
                 "-p", "odom_frame:=odom",
                 "-p", "footprint_frame:=base_footprint",
+                "-p", ["contact_mode:=", LaunchConfiguration("contact_mode")],
+                "-p", ["smooth_tau:=", LaunchConfiguration("footprint_smooth_tau")],
+                "-p", ["footprint_feet:=", LaunchConfiguration("footprint_feet")],
             ],
             output="screen",
             condition=IfCondition(LaunchConfiguration("publish_footprint")),
@@ -129,5 +169,41 @@ def generate_launch_description():
             ],
             output="screen",
             condition=IfCondition(LaunchConfiguration("sensor_tf")),
+        ),
+
+        # Fix the sim's depth image header (height/width/step=0) -> /front_depth/image.
+        ExecuteProcess(
+            cmd=[
+                "python3", depth_fixup_script, "--ros-args",
+                "-p", ["width:=", LaunchConfiguration("depth_width")],
+                "-p", ["height:=", LaunchConfiguration("depth_height")],
+                "-p", "frame_id:=front_optical",
+                "-p", "in_topic:=/image_raw/compressed/depth",
+                "-p", "out_topic:=/front_depth/image",
+            ],
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("depth_fixup")),
+        ),
+
+        # --- OPT-IN velocity control: /cmd_vel -> eCAL sdk_cmd (SENDS commands) ---
+        # cmd_control_mode < 0 keeps the C++ bridge in OBSERVE mode (no command),
+        # so enabling cmd_vel without a calibrated mode is still safe.
+        ExecuteProcess(
+            cmd=[
+                cmd_vel_bridge_bin,
+                LaunchConfiguration("cmd_udp_port"),
+                LaunchConfiguration("cmd_control_mode"),
+                LaunchConfiguration("cmd_motion_mode"),
+            ],
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("cmd_vel")),
+        ),
+        ExecuteProcess(
+            cmd=[
+                "python3", cmd_vel_script, "--ros-args",
+                "-p", ["port:=", LaunchConfiguration("cmd_udp_port")],
+            ],
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("cmd_vel")),
         ),
     ])
