@@ -33,7 +33,9 @@ import os
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from sensor_msgs.msg import Image, CameraInfo
 
 # bytes-per-pixel for the encodings the sim may emit
@@ -115,6 +117,22 @@ class DepthImageFixup(Node):
         self.declare_parameter("frame_id", "front_optical")  # optical frame for depth data; "" = keep original
         self.declare_parameter("in_topic", "/image_raw/compressed/depth")
         self.declare_parameter("out_topic", "/front_depth/image")
+        # Depth path QoS depth (queue length). The republish serializes ~3MB per
+        # frame; a shallow queue (sensor_data default = 5) drops frames whenever
+        # processing jitters. A deeper queue (~3s at 10Hz) absorbs the jitter.
+        self.declare_parameter("qos_depth", 30)
+        # Republish the depth image + depth CameraInfo with RELIABLE QoS. The sim
+        # source is BEST_EFFORT (no retransmit); at 1080x720 (~3MB/frame, 30MB/s)
+        # a best-effort subscriber drops ~35% even as the sole consumer. This node
+        # subscribes best-effort (to match the source) and re-publishes reliable,
+        # so any reliable downstream consumer gets every frame. A RELIABLE pub is
+        # still compatible with best-effort subscribers (they just get best-effort
+        # delivery). Set false to pass best-effort through unchanged.
+        self.declare_parameter("reliable_output", True)
+        # Latency compensation: subtract this many ms from the depth stamp so
+        # downstream TF lookups land on the frame's true capture time, not its
+        # (later) render->readback->publish time. 0 = off (unchanged behavior).
+        self.declare_parameter("stamp_offset_ms", 0.0)
         # camera_info synthesis
         self.declare_parameter("publish_camera_info", True)
         self.declare_parameter("fov", float(cfg["fov"]))            # depth fov
@@ -133,9 +151,34 @@ class DepthImageFixup(Node):
         self.get_logger().info(f"w: {self.w}")
         in_topic = self.get_parameter("in_topic").value
         out_topic = self.get_parameter("out_topic").value
+        self.stamp_offset_ns = int(float(self.get_parameter("stamp_offset_ms").value) * 1e6)
 
-        self.pub = self.create_publisher(Image, out_topic, qos_profile_sensor_data)
-        self.create_subscription(Image, in_topic, self.on_img, qos_profile_sensor_data)
+        # Best-effort, deep queue for SUBSCRIBING to the sim source (a reliable
+        # sub would be QoS-incompatible with the best-effort source and receive
+        # nothing). Deep queue absorbs delivery jitter.
+        qos_depth = int(self.get_parameter("qos_depth").value)
+        depth_qos = QoSProfile(depth=qos_depth,
+                               reliability=ReliabilityPolicy.BEST_EFFORT,
+                               history=HistoryPolicy.KEEP_LAST)
+        # Output QoS: RELIABLE by default so downstream consumers get every frame
+        # (best-effort would drop ~35% at this bitrate). Reverts to best-effort if
+        # reliable_output is false.
+        out_reliable = bool(self.get_parameter("reliable_output").value)
+        out_qos = QoSProfile(
+            depth=qos_depth,
+            reliability=ReliabilityPolicy.RELIABLE if out_reliable
+            else ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST)
+        # Callback groups: keep on_img on its own mutually-exclusive group so
+        # frames stay strictly ordered, and the RGB CameraInfo timer on another,
+        # so (under the MultiThreadedExecutor) the timer never blocks the depth
+        # republish and vice-versa.
+        self.img_cbg = MutuallyExclusiveCallbackGroup()
+        self.timer_cbg = MutuallyExclusiveCallbackGroup()
+
+        self.pub = self.create_publisher(Image, out_topic, out_qos)
+        self.create_subscription(Image, in_topic, self.on_img, depth_qos,
+                                 callback_group=self.img_cbg)
         self.warned = False
 
         self.pub_ci = bool(self.get_parameter("publish_camera_info").value)
@@ -145,11 +188,12 @@ class DepthImageFixup(Node):
             depth_frame = self.frame or "front"
             rgb_frame = self.get_parameter("rgb_frame_id").value
 
-            # Depth CameraInfo (stamped per depth frame in on_img).
+            # Depth CameraInfo (stamped per depth frame in on_img). Same reliable
+            # output QoS as the image so the pair stays deliverable together.
             self.depth_ci = make_camera_info(self.w, self.h, fov, depth_frame, axis)
             self.depth_ci_pub = self.create_publisher(
                 CameraInfo, self.get_parameter("depth_info_topic").value,
-                qos_profile_sensor_data)
+                out_qos)
 
             # RGB CameraInfo (the missing sim topic) published on a timer.
             # Uses the camera's OWN fov (rgb_fov), which may differ from depth.
@@ -161,7 +205,7 @@ class DepthImageFixup(Node):
                 CameraInfo, self.get_parameter("rgb_info_topic").value,
                 qos_profile_sensor_data)
             rate = float(self.get_parameter("rgb_info_rate_hz").value)
-            self.create_timer(1.0 / rate, self.on_rgb_ci)
+            self.create_timer(1.0 / rate, self.on_rgb_ci, callback_group=self.timer_cbg)
             self.get_logger().info(
                 f"camera_info: rgb {rgb_w}x{rgb_h} fx={self.rgb_ci.k[0]:.1f} "
                 f"(fov={rgb_fov}°) -> {self.get_parameter('rgb_info_topic').value}; "
@@ -170,11 +214,21 @@ class DepthImageFixup(Node):
 
         self.get_logger().info(
             f"depth fixup: {in_topic} -> {out_topic} "
-            f"({self.w}x{self.h}, frame='{self.frame or 'keep'}')")
+            f"({self.w}x{self.h}, frame='{self.frame or 'keep'}', "
+            f"stamp_offset={self.stamp_offset_ns / 1e6:.1f}ms)")
 
     def on_rgb_ci(self):
         self.rgb_ci.header.stamp = self.get_clock().now().to_msg()
         self.rgb_ci_pub.publish(self.rgb_ci)
+
+    @staticmethod
+    def _shift_stamp_earlier(stamp, offset_ns):
+        """Move a builtin_interfaces/Time earlier by offset_ns, in place."""
+        total = stamp.sec * 1_000_000_000 + stamp.nanosec - offset_ns
+        if total < 0:
+            total = 0
+        stamp.sec = int(total // 1_000_000_000)
+        stamp.nanosec = int(total % 1_000_000_000)
 
     def on_img(self, msg: Image):
         bpp = BPP.get(msg.encoding, 0)
@@ -195,6 +249,12 @@ class DepthImageFixup(Node):
             msg.step = self.w * bpp if bpp else msg.step
         if self.frame:
             msg.header.frame_id = self.frame
+        # Compensate the fixed render->publish latency (measured ~50ms via
+        # `ros2 topic delay /front_depth/image`, vs ~0 for /odom). Shifting the
+        # stamp earlier makes the planner's odom->base TF lookup resolve to the
+        # pose at actual capture time, removing the motion/rotation ghost.
+        if self.stamp_offset_ns:
+            self._shift_stamp_earlier(msg.header.stamp, self.stamp_offset_ns)
         self.pub.publish(msg)
 
         # Depth CameraInfo stamped to match this frame (for depth_image_proc).
@@ -206,13 +266,20 @@ class DepthImageFixup(Node):
 def main():
     rclpy.init()
     node = DepthImageFixup()
+    # Multi-threaded so the depth republish and the CameraInfo timer run on
+    # separate threads (rmw serialization releases the GIL), preventing the timer
+    # from stalling the depth path.
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():  # avoid double-shutdown when a signal already tore it down
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

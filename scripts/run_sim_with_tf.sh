@@ -58,14 +58,22 @@ STOPPING=0
 log() { echo "[run_all] $*"; }
 
 # Stop only the TF stack we started (leaves the simulator alone).
+# NOTE: this must list EVERY node the launch starts. A missing entry survives
+# teardown as an orphan (re-parented to systemd) and, on the next run, becomes a
+# duplicate publisher — e.g. two depth_image_fixup nodes fighting over
+# /front_depth/image, which halves the effective rate.
 stop_tf() {
   [ -n "$RSP_PID" ] && kill -INT "$RSP_PID" 2>/dev/null
   [ -n "$FWD_PID" ] && kill "$FWD_PID" 2>/dev/null
   pkill -f "scripts/rsp.launch.py" 2>/dev/null
   pkill -f "scripts/bin/mujoco_joint_bridge" 2>/dev/null
+  pkill -f "scripts/bin/cmd_vel_ecal_bridge" 2>/dev/null
   pkill -f "scripts/joint_state_udp_bridge.py" 2>/dev/null
   pkill -f "scripts/base_footprint_publisher.py" 2>/dev/null
   pkill -f "scripts/sensor_tf_publisher.py" 2>/dev/null
+  pkill -f "scripts/depth_image_fixup.py" 2>/dev/null
+  pkill -f "scripts/odom_to_tf.py" 2>/dev/null
+  pkill -f "scripts/cmd_vel_udp_pub.py" 2>/dev/null
 }
 
 # Full stop, triggered ONLY by an explicit Ctrl-C / TERM.

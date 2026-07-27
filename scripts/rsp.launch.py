@@ -180,6 +180,15 @@ def generate_launch_description():
                 "-p", "frame_id:=front_optical",
                 "-p", "in_topic:=/image_raw/compressed/depth",
                 "-p", "out_topic:=/front_depth/image",
+                # Depth stamp trails the frame's true capture time by ~134ms
+                # (GPU render->readback->eCAL->republish); /odom is ~0. Shift the
+                # stamp earlier so the planner's TF lookup uses the true capture
+                # pose -> no ghost. NOTE: 134ms is the capture->stamp latency
+                # measured by depth_latency_probe.py (rotate facing one wall), NOT
+                # the ~50ms stamp->receive transport that `ros2 topic delay` shows
+                # -- the former is what causes the ghost. Re-measure with the probe
+                # (run it while fixup uses stamp_offset_ms:=0 to read RAW latency).
+                "-p", "stamp_offset_ms:=134.0",
             ],
             output="screen",
             condition=IfCondition(LaunchConfiguration("depth_fixup")),
