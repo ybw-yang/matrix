@@ -28,6 +28,8 @@ Usage (standalone):
       -p fov:=90.0 -p rgb_width:=1920 -p rgb_height:=1080
 """
 import math
+import json
+import os
 
 import rclpy
 from rclpy.node import Node
@@ -36,6 +38,42 @@ from sensor_msgs.msg import Image, CameraInfo
 
 # bytes-per-pixel for the encodings the sim may emit
 BPP = {"32FC1": 4, "16UC1": 2, "mono16": 2, "mono8": 1}
+
+# Fallback sensor defaults, used only if config.json is missing/unreadable.
+DEFAULTS = {
+    "width": 640, "height": 480, "fov": 90.0,
+    "rgb_width": 1920, "rgb_height": 1080, "rgb_fov": 90.0,
+}
+
+
+def _default_config_path():
+    """config/config.json relative to this script (scripts/ -> ../config)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.normpath(os.path.join(here, os.pardir, "config", "config.json"))
+
+
+def read_sensor_config(path):
+    """Pull depth + rgb resolution/fov from config.json, falling back to DEFAULTS
+    for any missing file/key. depth_sensor drives the depth image + depth
+    CameraInfo; camera drives the RGB CameraInfo. This keeps config.json the
+    single source of truth so the depth header is rewritten with the sim's ACTUAL
+    dims (a width/height mismatch corrupts the republished depth cloud)."""
+    cfg = dict(DEFAULTS)
+    try:
+        with open(path) as f:
+            sensors = json.load(f)["robot"]["sensors"]
+    except (OSError, KeyError, ValueError):
+        return cfg
+    depth = sensors.get("depth_sensor", {})
+    for src, dst in (("width", "width"), ("height", "height"), ("fov", "fov")):
+        if src in depth:
+            cfg[dst] = depth[src]
+    cam = sensors.get("camera", {})
+    for src, dst in (("width", "rgb_width"), ("height", "rgb_height"), ("fov", "rgb_fov")):
+        if src in cam:
+            cfg[dst] = cam[src]
+    return cfg
+
 
 
 def make_camera_info(width, height, fov_deg, frame_id, fov_axis="horizontal"):
@@ -65,18 +103,25 @@ def make_camera_info(width, height, fov_deg, frame_id, fov_axis="horizontal"):
 class DepthImageFixup(Node):
     def __init__(self):
         super().__init__("depth_image_fixup")
+        # Sensor resolution / fov come from config.json (single source of truth)
+        # so the depth header + synthesized CameraInfos match the sim. Each value
+        # is still exposed as a parameter and can be overridden explicitly.
+        self.declare_parameter("config_path", _default_config_path())
+        cfg = read_sensor_config(self.get_parameter("config_path").value)
+
         # depth image fixup
-        self.declare_parameter("width", 640)
-        self.declare_parameter("height", 480)
+        self.declare_parameter("width", int(cfg["width"]))
+        self.declare_parameter("height", int(cfg["height"]))
         self.declare_parameter("frame_id", "front_optical")  # optical frame for depth data; "" = keep original
         self.declare_parameter("in_topic", "/image_raw/compressed/depth")
         self.declare_parameter("out_topic", "/front_depth/image")
         # camera_info synthesis
         self.declare_parameter("publish_camera_info", True)
-        self.declare_parameter("fov", 90.0)
+        self.declare_parameter("fov", float(cfg["fov"]))            # depth fov
         self.declare_parameter("fov_axis", "horizontal")  # horizontal | vertical
-        self.declare_parameter("rgb_width", 1920)
-        self.declare_parameter("rgb_height", 1080)
+        self.declare_parameter("rgb_width", int(cfg["rgb_width"]))
+        self.declare_parameter("rgb_height", int(cfg["rgb_height"]))
+        self.declare_parameter("rgb_fov", float(cfg["rgb_fov"]))    # rgb camera fov
         self.declare_parameter("rgb_frame_id", "front")
         self.declare_parameter("rgb_info_topic", "/image_raw/compressed/camera_info")
         self.declare_parameter("depth_info_topic", "/front_depth/camera_info")
@@ -85,6 +130,7 @@ class DepthImageFixup(Node):
         self.w = int(self.get_parameter("width").value)
         self.h = int(self.get_parameter("height").value)
         self.frame = self.get_parameter("frame_id").value
+        self.get_logger().info(f"w: {self.w}")
         in_topic = self.get_parameter("in_topic").value
         out_topic = self.get_parameter("out_topic").value
 
@@ -106,9 +152,11 @@ class DepthImageFixup(Node):
                 qos_profile_sensor_data)
 
             # RGB CameraInfo (the missing sim topic) published on a timer.
+            # Uses the camera's OWN fov (rgb_fov), which may differ from depth.
             rgb_w = int(self.get_parameter("rgb_width").value)
             rgb_h = int(self.get_parameter("rgb_height").value)
-            self.rgb_ci = make_camera_info(rgb_w, rgb_h, fov, rgb_frame, axis)
+            rgb_fov = float(self.get_parameter("rgb_fov").value)
+            self.rgb_ci = make_camera_info(rgb_w, rgb_h, rgb_fov, rgb_frame, axis)
             self.rgb_ci_pub = self.create_publisher(
                 CameraInfo, self.get_parameter("rgb_info_topic").value,
                 qos_profile_sensor_data)
@@ -116,9 +164,9 @@ class DepthImageFixup(Node):
             self.create_timer(1.0 / rate, self.on_rgb_ci)
             self.get_logger().info(
                 f"camera_info: rgb {rgb_w}x{rgb_h} fx={self.rgb_ci.k[0]:.1f} "
-                f"-> {self.get_parameter('rgb_info_topic').value}; "
+                f"(fov={rgb_fov}°) -> {self.get_parameter('rgb_info_topic').value}; "
                 f"depth {self.w}x{self.h} fx={self.depth_ci.k[0]:.1f} "
-                f"-> {self.get_parameter('depth_info_topic').value} (fov={fov}° {axis})")
+                f"(fov={fov}°) -> {self.get_parameter('depth_info_topic').value} ({axis})")
 
         self.get_logger().info(
             f"depth fixup: {in_topic} -> {out_topic} "

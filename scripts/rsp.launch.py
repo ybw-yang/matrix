@@ -54,7 +54,7 @@ def generate_launch_description():
     odom_tf_script = os.path.join(here, "odom_to_tf.py")
     ecal_bridge_bin = os.path.join(here, "bin", "mujoco_joint_bridge")
     cmd_vel_bridge_bin = os.path.join(here, "bin", "cmd_vel_ecal_bridge")
-    config_json = os.path.join(here, os.pardir, "config", "config.json")
+    config_json = os.path.normpath(os.path.join(here, os.pardir, "config", "config.json"))
 
     return LaunchDescription([
         DeclareLaunchArgument("urdf",
@@ -78,11 +78,10 @@ def generate_launch_description():
             description="true: real leg angles from eCAL leg_data; "
                         "false: joint_state_publisher zeros."),
         DeclareLaunchArgument("depth_fixup", default_value="true",
-            description="fix the sim depth image header (0 dims) -> /front_depth/image"),
-        DeclareLaunchArgument("depth_width", default_value="640"),
-        DeclareLaunchArgument("depth_height", default_value="480"),
+            description="fix the sim depth image header (0 dims) -> /front_depth/image; "
+                        "resolution/fov read from config.json inside the node"),
         # cmd_vel velocity control WRITES commands to the robot -> opt-in (default off).
-        DeclareLaunchArgument("cmd_vel", default_value="false",
+        DeclareLaunchArgument("cmd_vel", default_value="true",
             description="enable /cmd_vel -> eCAL sdk_cmd velocity bridge (sends commands!)"),
         DeclareLaunchArgument("cmd_control_mode", default_value="-1",
             description="SDKCmd control_mode; <0 = OBSERVE only (prints mode, no command)"),
@@ -172,11 +171,12 @@ def generate_launch_description():
         ),
 
         # Fix the sim's depth image header (height/width/step=0) -> /front_depth/image.
+        # Resolution + fov come from config.json (read inside the node), so the
+        # rewritten header/CameraInfo match the sim; just point it at the config.
         ExecuteProcess(
             cmd=[
                 "python3", depth_fixup_script, "--ros-args",
-                "-p", ["width:=", LaunchConfiguration("depth_width")],
-                "-p", ["height:=", LaunchConfiguration("depth_height")],
+                "-p", "config_path:=" + config_json,
                 "-p", "frame_id:=front_optical",
                 "-p", "in_topic:=/image_raw/compressed/depth",
                 "-p", "out_topic:=/front_depth/image",
