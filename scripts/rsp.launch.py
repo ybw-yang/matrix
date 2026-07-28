@@ -83,9 +83,17 @@ def generate_launch_description():
         # cmd_vel velocity control WRITES commands to the robot -> opt-in (default off).
         DeclareLaunchArgument("cmd_vel", default_value="true",
             description="enable /cmd_vel -> eCAL sdk_cmd velocity bridge (sends commands!)"),
+        # To WALK via /cmd_vel: stand the robot first (keyboard U), then launch
+        # with cmd_control_mode:=18 cmd_motion_mode:=1 (RL_MIX / policy_mix_walk
+        # translation walk). Mode map (SDK path): stand=1/10, WALK=18/1,
+        # balance-stand/RPY=21/100 (in-place body pose, NOT walk).
+        # Default stays OBSERVE(-1) so velocity control is armed only on opt-in.
         DeclareLaunchArgument("cmd_control_mode", default_value="-1",
-            description="SDKCmd control_mode; <0 = OBSERVE only (prints mode, no command)"),
-        DeclareLaunchArgument("cmd_motion_mode", default_value="0"),
+            description="SDKCmd control_mode; <0 = OBSERVE only (prints mode, no "
+                        "command). 18 = RL_MIX walk (translate); 21 = balance-stand/RPY"),
+        DeclareLaunchArgument("cmd_motion_mode", default_value="0",
+            description="SDKCmd motion_mode; 1=Walk (pairs with cmd_control_mode:=18). "
+                        "Not propagated for RL_MIX walk, so belt-and-suspenders only"),
         DeclareLaunchArgument("cmd_udp_port", default_value="25999"),
 
         Node(

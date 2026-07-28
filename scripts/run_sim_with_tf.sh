@@ -22,6 +22,9 @@
 #   ATTACH=1                              do NOT start the sim; attach tf to an already-running sim
 #   MUJOCO=1                              (ATTACH=0 only) start the MuJoCo window with keyboard
 #                                         control (U=stand, WASD=move); set 0 for UE render only
+#   CMD_CONTROL_MODE / CMD_MOTION_MODE    /cmd_vel velocity control (default -1/0 =
+#                                         OBSERVE, no commands). Set 18/1 to WALK
+#                                         (stand the robot first with keyboard U).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,6 +37,14 @@ FOOTPRINT_MODE="${FOOTPRINT_MODE:-footplane}"
 SIM_WAIT_TIMEOUT="${SIM_WAIT_TIMEOUT:-90}"
 ATTACH="${ATTACH:-1}"
 MUJOCO="${MUJOCO:-0}"   # 1 = enable MuJoCo physics window -> keyboard control
+
+# cmd_vel velocity control is OPT-IN (safety): defaults keep the bridge in OBSERVE
+# mode (no commands sent). To WALK the robot via /cmd_vel, stand it first
+# (keyboard U), then set CMD_CONTROL_MODE=18 CMD_MOTION_MODE=1 (RL_MIX /
+# policy_mix_walk translation walk). Mode map (SDK path, from mc_ctrl jump table):
+# stand=1/10, WALK=18/1, balance-stand/RPY=21/100 (in-place pose, NOT walk).
+CMD_CONTROL_MODE="${CMD_CONTROL_MODE:-18}"
+CMD_MOTION_MODE="${CMD_MOTION_MODE:-1}"
 
 export SDK_CLIENT_IP="${SDK_CLIENT_IP:-127.0.0.1}"
 
@@ -162,6 +173,7 @@ if [ -n "$URDF" ]; then
   log "starting tf stack: rsp.launch.py urdf=$URDF footprint_mode=$FOOTPRINT_MODE (log: bin/rsp.log)"
   ros2 launch scripts/rsp.launch.py urdf:="$URDF" footprint_mode:="$FOOTPRINT_MODE" \
       odom_tf:="$ODOM_TF_ARG" \
+      cmd_control_mode:="$CMD_CONTROL_MODE" cmd_motion_mode:="$CMD_MOTION_MODE" \
       > "$LOG_DIR/rsp.log" 2>&1 &
   RSP_PID=$!
 else

@@ -14,6 +14,26 @@
 // values to enable velocity control. If no fresh /cmd_vel arrives for `timeout`
 // seconds it publishes zero velocity (safety stop).
 //
+// XG SDK-PATH MODES. control_mode is the FSM selector: handleROSSDKCommand()
+// writes the raw wire control_mode into RobotControlParameters (offset 0x98) and
+// each FSM state's checkTransition() maps it (jump table @ mc_ctrl 0x4f3de0) to
+// an FSM_StateName. Only {0,1,18,21,51} are recognized; other values are ignored.
+//   passive            control_mode=0
+//   stand              control_mode=1   motion_mode=10   (STAND_UP; hold to stand)
+//   WALK (translate)   control_mode=18  motion_mode=1    <- RL_MIX / policy_mix_walk
+//   balance-stand/RPY  control_mode=21  motion_mode=100  <- in-place body pose, NOT walk
+//   joint_pd           control_mode=51
+// 21=balance-stand is EMPIRICALLY confirmed (the "twist" that does in-place RPY).
+// 18=walk is decoded from the jump table (high confidence; verify with
+// scripts/bin/find_walk_mode). For WALK, control_mode=18 + vx/vy/yaw_rate is
+// sufficient -- the SDK handler does NOT propagate motion_mode for RL_MIX, so
+// motion_mode=1(Walk) is only belt-and-suspenders. enable_control_mode is NOT read
+// on the SDK path.
+// So to DRIVE via /cmd_vel: stand the robot first (keyboard U -> STAND_UP), then
+// run:  cmd_vel_ecal_bridge 25999 18 1  and publish /cmd_vel. mc_ctrl only enters
+// RL_MIX from a standing state, so a lying/passive robot will not move even in
+// PUBLISH mode. If it won't leave balance-stand, send control_mode=1 first, then 18.
+//
 // Build via scripts/build_joint_bridge.sh. Manual:
 //   g++ -std=c++17 scripts/cmd_vel_ecal_bridge.cpp -I/usr/include \
 //       -o scripts/bin/cmd_vel_ecal_bridge \
