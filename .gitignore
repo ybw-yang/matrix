@@ -63,3 +63,6 @@ scripts/__pycache__
 # OS files
 .DS_Store
 Thumbs.db
+
+# ros bag
+sync_bag

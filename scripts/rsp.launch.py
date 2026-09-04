@@ -25,6 +25,8 @@ Args:
   publish_joints    run joint_state_publisher to connect the legs (default true).
   publish_footprint run base_footprint_publisher (default true).
   footprint_mode    projection | footplane (default projection).
+  lidar_fixup       republish /livox/lidar with a capture-time stamp (default true).
+  lidar_stamp_offset_ms  capture->stamp latency to remove (default 45.0).
 """
 import os
 
@@ -50,6 +52,7 @@ def generate_launch_description():
     joint_udp_script = os.path.join(here, "joint_state_udp_bridge.py")
     sensor_tf_script = os.path.join(here, "sensor_tf_publisher.py")
     depth_fixup_script = os.path.join(here, "depth_image_fixup.py")
+    lidar_fixup_script = os.path.join(here, "lidar_stamp_fixup.py")
     cmd_vel_script = os.path.join(here, "cmd_vel_udp_pub.py")
     odom_tf_script = os.path.join(here, "odom_to_tf.py")
     ecal_bridge_bin = os.path.join(here, "bin", "mujoco_joint_bridge")
@@ -80,6 +83,15 @@ def generate_launch_description():
         DeclareLaunchArgument("depth_fixup", default_value="true",
             description="fix the sim depth image header (0 dims) -> /front_depth/image; "
                         "resolution/fov read from config.json inside the node"),
+        DeclareLaunchArgument("lidar_fixup", default_value="true",
+            description="republish /livox/lidar -> /livox/lidar_fixed with the stamp "
+                        "shifted earlier to the true capture instant"),
+        DeclareLaunchArgument("lidar_stamp_offset_ms", default_value="45.0",
+            description="capture->stamp latency removed from the cloud stamp; set 0 to "
+                        "pass through while re-measuring with stamp_sync_probe.py"),
+        DeclareLaunchArgument("lidar_out_topic", default_value="/livox/lidar_fixed",
+            description="where the corrected cloud is published; point your LIO here "
+                        "(it cannot be /livox/lidar -- that would feed back)"),
         # cmd_vel velocity control WRITES commands to the robot -> opt-in (default off).
         DeclareLaunchArgument("cmd_vel", default_value="true",
             description="enable /cmd_vel -> eCAL sdk_cmd velocity bridge (sends commands!)"),
@@ -200,6 +212,26 @@ def generate_launch_description():
             ],
             output="screen",
             condition=IfCondition(LaunchConfiguration("depth_fixup")),
+        ),
+
+        # Correct the lidar stamp: the sim stamps a cloud ~45 ms LATER than the
+        # instant it depicts, so a TF lookup at the raw stamp uses a pose the
+        # robot had already left. Measured with stamp_sync_probe.py's content
+        # check (lidar's own yaw rate, recovered from the azimuth profile shift,
+        # cross-correlated against /odom): +42.7 / +52.7 / +43.5 ms over a 94 s
+        # reversal-rich bag, every window agreeing on the sign. Same correction
+        # as the depth image's 134 ms above; see lidar_stamp_fixup.py for why
+        # this is NOT the ~16 ms that `ros2 topic delay` reports.
+        # /imu and /odom need no such fix -- they cross-correlate at +0.00 ms.
+        ExecuteProcess(
+            cmd=[
+                "python3", lidar_fixup_script, "--ros-args",
+                "-p", "in_topic:=/livox/lidar",
+                "-p", ["out_topic:=", LaunchConfiguration("lidar_out_topic")],
+                "-p", ["stamp_offset_ms:=", LaunchConfiguration("lidar_stamp_offset_ms")],
+            ],
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("lidar_fixup")),
         ),
 
         # --- OPT-IN velocity control: /cmd_vel -> eCAL sdk_cmd (SENDS commands) ---

@@ -23,7 +23,7 @@
         },
         "rotation": {
           "roll": 0,
-          "pitch": 15,
+          "pitch": -35,
           "yaw": 0
         },
         "height": 1080,
@@ -41,7 +41,7 @@
         },
         "rotation": {
           "roll": 0,
-          "pitch": 15,
+          "pitch": -35,
           "yaw": 0
         },
         "height": 720,
@@ -59,7 +59,7 @@
         },
         "rotation": {
           "roll": 0,
-          "pitch": 0,
+          "pitch": -45,
           "yaw": 0
         },
         "sensor_type": "mid360",

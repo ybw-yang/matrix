@@ -1,0 +1,39 @@
+# QoS overrides for `ros2 bag record` against the UE sim's /sensor_sim publishers.
+#
+# Every one of these topics is offered BEST_EFFORT (verified with `ros2 topic info -v`).
+# A recorder that subscribes RELIABLE is QoS-incompatible and silently records
+# NOTHING, so each topic is pinned to best_effort here rather than relying on
+# rosbag2's auto-adaptation.
+#
+# Depths are sized for ~1 s of buffer at each topic's real rate (470 Hz for
+# imu/odom, 10 Hz for the cloud) so a scheduling hiccup drops nothing.
+/imu:
+  history: keep_last
+  depth: 1000
+  reliability: best_effort
+  durability: volatile
+/front_lidar/imu:
+  history: keep_last
+  depth: 1000
+  reliability: best_effort
+  durability: volatile
+/front_camera/imu:
+  history: keep_last
+  depth: 1000
+  reliability: best_effort
+  durability: volatile
+/odom/mujoco_odom:
+  history: keep_last
+  depth: 1000
+  reliability: best_effort
+  durability: volatile
+/livox/lidar:
+  history: keep_last
+  depth: 100
+  reliability: best_effort
+  durability: volatile
+/joint_states:
+  history: keep_last
+  depth: 1000
+  reliability: best_effort
+  durability: volatile
